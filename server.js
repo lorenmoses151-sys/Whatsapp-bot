@@ -1,5 +1,5 @@
 /**
- * WhatsApp Bot using Twilio Sandbox
+ * WhatsApp Bot using Twilio Sandbox - FIXED VERSION
  * Run: node server.js
  * Requires: npm install express twilio dotenv
  */
@@ -18,13 +18,13 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   ANTHROPIC_API_KEY,
-  HUMAN_AGENT_NUMBER, // e.g. whatsapp:+2348012345678
+  HUMAN_AGENT_NUMBER,
 } = process.env;
 
 const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const DB_FILE = "./db.json";
 
-// ─── Database ───────────────────────────────────────────────────────────────
+// ─── Database ────────────────────────────────────────────────────────────────
 function loadDB() {
   if (!fs.existsSync(DB_FILE))
     fs.writeFileSync(DB_FILE, JSON.stringify({ orders: [], sessions: {} }));
@@ -39,16 +39,16 @@ function getSession(db, phone) {
   return db.sessions[phone];
 }
 
-// ─── Send WhatsApp message via Twilio ───────────────────────────────────────
+// ─── Send WhatsApp message ───────────────────────────────────────────────────
 async function sendMessage(to, body) {
   await client.messages.create({
-    from: "whatsapp:+14155238886", // Twilio sandbox number
+    from: "whatsapp:+14155238886",
     to: to.startsWith("whatsapp:") ? to : `whatsapp:${to}`,
     body,
   });
 }
 
-// ─── Claude AI for FAQ ──────────────────────────────────────────────────────
+// ─── Claude AI ───────────────────────────────────────────────────────────────
 async function askClaude(userMessage, history) {
   const res = await axios.post(
     "https://api.anthropic.com/v1/messages",
@@ -83,12 +83,12 @@ How can I help you today?
 
 Reply with a number.`;
 
-// ─── Incoming webhook ────────────────────────────────────────────────────────
+// ─── Webhook ─────────────────────────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   try {
-    const from = req.body.From; // e.g. whatsapp:+2348012345678
+    const from = req.body.From;
     const text = (req.body.Body || "").trim();
 
     const db = loadDB();
@@ -96,23 +96,34 @@ app.post("/webhook", async (req, res) => {
 
     console.log(`📩 [${from}] "${text}" | state: ${session.state}`);
 
-    // Escalated — forward to human agent
+    // ── "menu" resets everything from ANY state ──────────────────────────────
+    if (text.toLowerCase() === "menu") {
+      session.state = "menu";
+      session.order = null;
+      await sendMessage(from, MENU);
+      saveDB(db);
+      return;
+    }
+
+    // ── Escalated — forward to human agent ───────────────────────────────────
     if (session.state === "escalated") {
       if (HUMAN_AGENT_NUMBER) {
         await sendMessage(HUMAN_AGENT_NUMBER, `[Customer ${from}]: ${text}`);
+      } else {
+        await sendMessage(from, "Our agent will respond shortly. Reply *menu* to return to the bot.");
       }
       saveDB(db);
       return;
     }
 
-    // Ordering flow
+    // ── Ordering flow ────────────────────────────────────────────────────────
     if (session.state === "ordering") {
       await handleOrdering(from, text, session, db);
       saveDB(db);
       return;
     }
 
-    // Menu
+    // ── Main menu options ────────────────────────────────────────────────────
     if (text === "1") {
       session.state = "ordering";
       session.order = { items: [], step: "product" };
@@ -136,10 +147,6 @@ app.post("/webhook", async (req, res) => {
       if (HUMAN_AGENT_NUMBER) {
         await sendMessage(HUMAN_AGENT_NUMBER, `🔔 Customer ${from} needs human support.`);
       }
-    } else if (text.toLowerCase() === "menu") {
-      session.state = "menu";
-      session.order = null;
-      await sendMessage(from, MENU);
     } else {
       // Free text → AI FAQ
       session.history.push({ role: "user", content: text });
@@ -157,13 +164,6 @@ app.post("/webhook", async (req, res) => {
 // ─── Order flow ──────────────────────────────────────────────────────────────
 async function handleOrdering(from, text, session, db) {
   const order = session.order;
-
-  if (text.toLowerCase() === "menu") {
-    session.state = "menu";
-    session.order = null;
-    await sendMessage(from, MENU);
-    return;
-  }
 
   if (order.step === "product") {
     order.items.push(text);
@@ -207,11 +207,15 @@ async function handleOrdering(from, text, session, db) {
   }
 }
 
-// ─── Dashboard API ───────────────────────────────────────────────────────────
+// ─── Dashboard ───────────────────────────────────────────────────────────────
 app.get("/dashboard", (req, res) => {
   const db = loadDB();
-  res.json({ total_orders: db.orders.length, confirmed: db.orders.filter(o => o.status === "Confirmed").length, orders: db.orders });
+  res.json({
+    total_orders: db.orders.length,
+    confirmed: db.orders.filter(o => o.status === "Confirmed").length,
+    orders: db.orders
+  });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}\nWebhook: http://localhost:${PORT}/webhook`));
+app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
